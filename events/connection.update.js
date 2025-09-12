@@ -1,8 +1,9 @@
 // events/connection.update.js
-// Handles WhatsApp connection updates, QR PNG generation, Telegram delivery, and reconnection.
+// Handles WhatsApp connection updates, robust QR delivery to Telegram, and reconnection.
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { Boom } = require("@hapi/boom");
 const { DisconnectReason, delay } = require("@whiskeysockets/baileys");
 
@@ -11,7 +12,7 @@ const { DisconnectReason, delay } = require("@whiskeysockets/baileys");
  * @param {Object} deps
  * @param {import('pino').Logger} deps.logger
  * @param {import('node-telegram-bot-api')} [deps.tgBot]
- * @param {string} [deps.adminId]
+ * @param {string|number} [deps.adminId]
  * @param {Function} deps.startBot
  * @param {Object} deps.QRCode (qrcode lib)
  */
@@ -20,15 +21,30 @@ module.exports = ({ logger, tgBot, adminId, startBot, QRCode }) =>
   async ({ connection, lastDisconnect, qr }) => {
     // ---- QR handling (send to Telegram if available) ----
     if (qr && tgBot && adminId) {
-      const qrPath = path.join(__dirname, "..", "qr.png");
       try {
-        await QRCode.toFile(qrPath, qr, { type: "png" });
-        await tgBot.sendPhoto(adminId, fs.createReadStream(qrPath), {
+        // حاول أولاً إرسال Buffer مباشرة
+        const buffer = await QRCode.toBuffer(qr, { type: "png" });
+        await tgBot.sendPhoto(adminId, buffer, {
           caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
         });
-        logger.info(`📤 QR code generated & sent to Telegram: ${qrPath}`);
-      } catch (err) {
-        logger.error("❌ QR generation/telegram send failed:", err);
+        logger.info("📤 QR code sent to Telegram (buffer).");
+      } catch (bufErr) {
+        logger.error({ err: bufErr }, "❌ Failed to send QR buffer to Telegram. Falling back to file.");
+
+        // Fallback: اكتب ملف في مجلد مؤقت آمن ثم أرسله
+        try {
+          const tmpPath = path.join(os.tmpdir(), "qr.png");
+          await QRCode.toFile(tmpPath, qr, { type: "png" });
+          await tgBot.sendPhoto(adminId, fs.createReadStream(tmpPath), {
+            caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
+          });
+          logger.info(`📤 QR code generated & sent to Telegram from file: ${tmpPath}`);
+        } catch (fileErr) {
+          logger.error(
+            { err: fileErr },
+            "❌ QR generation/telegram send failed (both buffer and file). Ensure TELEGRAM_ADMIN_ID is numeric chat id and you've /start-ed the bot."
+          );
+        }
       }
     }
 
@@ -63,7 +79,7 @@ module.exports = ({ logger, tgBot, adminId, startBot, QRCode }) =>
           logger.warn("Could not determine self WhatsApp ID to DM.");
         }
       } catch (err) {
-        logger.error("Failed to send self-DM:", err);
+        logger.error({ err }, "Failed to send self-DM");
       }
     }
   };
