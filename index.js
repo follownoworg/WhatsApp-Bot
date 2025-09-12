@@ -1,115 +1,122 @@
 /**
- * WhatsApp Bot Entry Point with MongoDB session storage and Express server
+ * WhatsApp Bot Entry Point
+ * - MongoDB session storage
+ * - Express health server
+ * - Telegram QR delivery (optional)
  */
-const {
-  default: makeWASocket,
-  fetchLatestBaileysVersion,
-} = require("@whiskeysockets/baileys");
+
 const fs = require("fs");
 const path = require("path");
-const pino = require("pino");
 const express = require("express");
 const mongoose = require("mongoose");
-const config = require("./utils");
+const pino = require("pino");
+const { default: makeWASocket, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
 const QRCode = require("qrcode");
 const TelegramBot = require("node-telegram-bot-api");
 
-// --------------------- Logger Setup ---------------------
-const logDir = path.join(__dirname, "logs");
-if (!fs.existsSync(logDir)) fs.mkdirSync(logDir);
-const logFile = path.join(logDir, `${new Date().toISOString().slice(0, 10)}.log`);
+// ---------- Config ----------
+const {
+  MONGODB_URI,
+  TELEGRAM_TOKEN,
+  TELEGRAM_ADMIN_ID,
+  PORT = 3000,
+  LOG_LEVEL = "info",
+} = process.env;
+
+if (!MONGODB_URI) {
+  throw new Error("❌ Missing MONGODB_URI in environment variables.");
+}
+
+// ---------- Logger ----------
+const logsDir = path.join(__dirname, "logs");
+if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir);
+const logFile = path.join(logsDir, `${new Date().toISOString().slice(0, 10)}.log`);
+
 const logger = pino(
-  { level: config.logging?.level || "info", transport: { target: "pino-pretty" } },
+  { level: LOG_LEVEL, transport: { target: "pino-pretty" } },
   pino.destination(logFile)
 );
 
-// --------------------- MongoDB Setup ---------------------
-const MONGODB_URI = process.env.MONGODB_URI;
-if (!MONGODB_URI) throw new Error("❌ Missing MONGODB_URI in environment variables.");
-mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+// ---------- Mongo ----------
+mongoose
+  .connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .catch((err) => {
+    logger.error("Mongo initial connection error:", err);
+    process.exit(1);
+  });
+
+mongoose.connection.on("connected", () => logger.info("✅ Mongo connected"));
+mongoose.connection.on("error", (err) => logger.error("Mongo connection error:", err));
 
 const sessionSchema = new mongoose.Schema({ name: String, data: Object });
 const Session = mongoose.model("Session", sessionSchema);
 
-// --------------------- Telegram Setup ---------------------
-const tgToken = process.env.TELEGRAM_TOKEN;
-const adminId = process.env.TELEGRAM_ADMIN_ID;
-const tgBot = tgToken && adminId ? new TelegramBot(tgToken, { polling: false }) : null;
+// ---------- Telegram (optional) ----------
+const tgBot = TELEGRAM_TOKEN && TELEGRAM_ADMIN_ID
+  ? new TelegramBot(TELEGRAM_TOKEN, { polling: false })
+  : null;
 
-// --------------------- Express Server ---------------------
+// ---------- Express ----------
 const app = express();
-const port = process.env.PORT || 3000;
-app.get("/", (req, res) => res.send("WhatsApp Bot running"));
-app.listen(port, () => logger.info(`HTTP server running on port ${port}`));
+app.get("/", (_req, res) => res.send("WhatsApp Bot running"));
+app.listen(PORT, () => logger.info(`HTTP server running on port ${PORT}`));
 
-// --------------------- Start Bot ---------------------
+// ---------- Start Bot ----------
 async function startBot() {
-  // Try to load session from MongoDB
-  let authState;
-  const saved = await Session.findOne({ name: "auth_info" }).lean();
-  if (saved && saved.data) {
-    authState = saved.data;
-    logger.info("✅ Loaded session from MongoDB.");
-  } else {
-    authState = undefined;
-    logger.info("⚠️ No session found, will generate QR for first login.");
-  }
+  try {
+    // Load saved session (if any)
+    let authState;
+    const saved = await Session.findOne({ name: "auth_info" }).lean();
+    if (saved && saved.data) {
+      authState = saved.data;
+      logger.info("✅ Loaded session from MongoDB.");
+    } else {
+      logger.warn("⚠️ No session found. Will generate QR on first login.");
+    }
 
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-  logger.info(`Using Baileys v${version.join(".")}, Latest: ${isLatest}`);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    logger.info(`Using Baileys v${version.join(".")} | latest: ${isLatest}`);
 
-  const sock = makeWASocket({
-    version,
-    auth: authState,
-    printQRInTerminal: false,
-    logger: pino({ level: "silent" }),
-    browser: ["NexosBot", "Opera GX", "120.0.5543.204"],
-    generateHighQualityLinkPreview: true,
-    markOnlineOnConnect: config.bot?.online ?? true,
-    syncFullHistory: config.bot?.history ?? false,
-    shouldSyncHistoryMessage: config.bot?.history ?? false,
-  });
+    const sock = makeWASocket({
+      version,
+      auth: authState, // undefined on first run
+      printQRInTerminal: !tgBot, // اطبع QR في الطرفية إذا لم يتوفر تيليجرام
+      logger: pino({ level: "silent" }),
+      browser: ["NexosBot", "Opera GX", "120.0.5543.204"],
+      generateHighQualityLinkPreview: true,
+      markOnlineOnConnect: true,
+      syncFullHistory: false,
+      shouldSyncHistoryMessage: false,
+    });
 
-  // Save credentials to MongoDB on update
-  sock.ev.on("creds.update", async (newCreds) => {
-    await Session.updateOne(
-      { name: "auth_info" },
-      { $set: { data: newCreds } },
-      { upsert: true }
-    );
-    logger.info("✅ Updated session in MongoDB.");
-  });
-
-  // --------------------- QR Handling ---------------------
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr && tgBot && adminId) {
-      const qrPath = path.join(__dirname, "qr.png");
-      await QRCode.toFile(qrPath, qr, { type: "png" });
+    // Persist credentials on every update
+    sock.ev.on("creds.update", async (newCreds) => {
       try {
-        await tgBot.sendPhoto(adminId, fs.createReadStream(qrPath), {
-          caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
-        });
-        logger.info("📤 QR code sent to Telegram admin.");
+        await Session.updateOne(
+          { name: "auth_info" },
+          { $set: { data: newCreds } },
+          { upsert: true }
+        );
+        logger.info("💾 Session updated in MongoDB.");
       } catch (err) {
-        logger.error("❌ Failed to send QR to Telegram:", err);
+        logger.error("❌ Failed to save session:", err);
       }
-    }
+    });
 
-    if (connection === "close") {
-      const reasonCode = new Error(lastDisconnect?.error)?.message || "Unknown";
-      const shouldReconnect = reasonCode !== "loggedOut";
-      logger.warn(`Connection closed. Code: ${reasonCode}. Reconnecting? ${shouldReconnect}`);
-      if (shouldReconnect) {
-        setTimeout(startBot, 3000);
-      } else {
-        logger.error("Logged out. Please reauthenticate.");
-      }
-    } else if (connection === "open") {
-      logger.info("✅ Connected to WhatsApp");
-    }
-  });
+    // Attach connection.update handler
+    const connectionUpdateHandler = require("./events/connection.update")({
+      logger,
+      tgBot,
+      adminId: TELEGRAM_ADMIN_ID,
+      startBot, // for auto-reconnect
+      QRCode,
+    });
+
+    sock.ev.on("connection.update", connectionUpdateHandler(sock));
+  } catch (err) {
+    logger.error("startBot fatal error:", err);
+    setTimeout(startBot, 5000); // retry on fatal error
+  }
 }
 
 startBot();
