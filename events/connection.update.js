@@ -1,16 +1,23 @@
 // Event Handler: connection.update
-// Description: Handles WhatsApp connection updates, QR code display as PNG, and reconnection logic.
-// Triggers on connection state changes (open, close, QR required).
+// Description: Handles WhatsApp connection updates, QR code display as PNG, 
+// sends it to Telegram, and manages reconnection logic.
 
+const fs = require("fs");
+const path = require("path");
 const QRCode = require("qrcode");
 const { Boom } = require("@hapi/boom");
 const { DisconnectReason, delay } = require("@whiskeysockets/baileys");
-const path = require("path");
+const TelegramBot = require("node-telegram-bot-api");
+
+// إعداد بوت تيليجرام من متغيرات البيئة
+const tgToken = process.env.TELEGRAM_TOKEN;
+const adminId = process.env.TELEGRAM_ADMIN_ID;
+const tgBot = tgToken ? new TelegramBot(tgToken) : null;
 
 module.exports = {
   eventName: "connection.update",
   /**
-   * Handles connection state changes, QR code display, and reconnection.
+   * Handles connection state changes, QR code display, Telegram sending, and reconnection.
    * @param {object} sock - The WhatsApp socket instance.
    * @param {object} logger - Logger for logging info and errors.
    * @param {Function} saveCreds - Function to save credentials.
@@ -21,14 +28,27 @@ module.exports = {
     (sock, logger, saveCreds, startBot) =>
     async ({ connection, lastDisconnect, qr }) => {
       if (qr) {
-        // حفظ QR كصورة بدلاً من عرضه في التيرمنال
         const qrPath = path.join(__dirname, "qr.png");
-        QRCode.toFile(qrPath, qr, { type: "png" }, (err) => {
+        QRCode.toFile(qrPath, qr, { type: "png" }, async (err) => {
           if (err) {
             logger.error("❌ Failed to generate QR:", err);
           } else {
             logger.info(`✅ QR code generated at: ${qrPath}`);
-            logger.info("📱 Open qr.png and scan it with WhatsApp to login.");
+
+            if (tgBot && adminId) {
+              try {
+                await tgBot.sendPhoto(adminId, fs.createReadStream(qrPath), {
+                  caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
+                });
+                logger.info("📤 QR code sent to Telegram admin.");
+              } catch (tgErr) {
+                logger.error("❌ Failed to send QR to Telegram:", tgErr);
+              }
+            } else {
+              logger.warn(
+                "⚠️ Telegram bot not configured. Set TELEGRAM_TOKEN and TELEGRAM_ADMIN_ID in environment."
+              );
+            }
           }
         });
       }
