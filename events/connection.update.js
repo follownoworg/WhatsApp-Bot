@@ -12,7 +12,8 @@ const TelegramBot = require("node-telegram-bot-api");
 // إعداد بوت تيليجرام من متغيرات البيئة
 const tgToken = process.env.TELEGRAM_TOKEN;
 const adminId = process.env.TELEGRAM_ADMIN_ID;
-const tgBot = tgToken ? new TelegramBot(tgToken) : null;
+const tgBot = tgToken ? new TelegramBot(tgToken, { polling: false }) : null;
+
 
 module.exports = {
   eventName: "connection.update",
