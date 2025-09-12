@@ -1,38 +1,33 @@
-
-/**
- * Creates a poll in the chat.
- * Usage: !poll Question? Option1; Option2; Option3
- */
 module.exports = {
-  name: "poll",
-  description: "Create a poll. Usage: !poll Question? Option1; Option2; Option3",
-  /**
-   * Sends a poll message to the chat.
-   * @param {object} sock - WhatsApp socket instance
-   * @param {string} from - Sender JID
-   * @param {Array} args - Command arguments
-   */
-  async execute(sock, from, args) {
-    if (!args.length) {
-      await sock.sendMessage(from, { text: "Usage: !poll Question? Option1; Option2; Option3" });
-      return;
+  name: "!poll",
+  aliases: ["poll", "!polls", "polls"],
+  run: async ({ sock, msg, args }) => {
+    const chatId = msg.key.remoteJid;
+    const raw = (args || []).join(" ");
+    // صيغة بسيطة: سؤال | خيار1, خيار2, خيار3
+    const [questionPart, optionsPart] = raw.split("|").map(s => (s || "").trim());
+    if (!questionPart || !optionsPart) {
+      return sock.sendMessage(
+        chatId,
+        { text: "استخدم: `!poll سؤال | خيار1, خيار2, خيار3`" },
+        { quoted: msg }
+      );
     }
-    const input = args.join(" ").split("?");
-    if (input.length < 2) {
-      await sock.sendMessage(from, { text: "Please provide a question and at least two options." });
-      return;
-    }
-    const question = input[0].trim() + "?";
-    const options = input[1].split(";").map(opt => opt.trim()).filter(Boolean);
+    const options = optionsPart.split(",").map(s => s.trim()).filter(Boolean);
     if (options.length < 2) {
-      await sock.sendMessage(from, { text: "Please provide at least two options separated by ';'." });
-      return;
+      return sock.sendMessage(chatId, { text: "رجاءً اكتب خيارين على الأقل." }, { quoted: msg });
     }
-    await sock.sendMessage(from, {
-      poll: {
-        name: question,
-        values: options
-      }
-    });
+
+    await sock.sendMessage(
+      chatId,
+      {
+        poll: {
+          name: questionPart,
+          options: options.map(o => ({ optionName: o })),
+          selectableCount: 1, // اختيار واحد
+        },
+      },
+      { quoted: msg }
+    );
   }
 };
