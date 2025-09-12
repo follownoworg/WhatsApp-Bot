@@ -1,29 +1,20 @@
-
-/**
- * Lists all available commands and their descriptions.
- * Usage: !help
- */
-const helpText = `
-Available commands:
-!hi    - Say hello
-!time  - Show current time
-!image - Send an image
-!poll  - Create a poll
-!ping  - Check bot response time
-`;
-
 module.exports = {
-  name: "help",
-  description: "List available commands.",
-  /**
-   * Sends a help message listing all commands.
-   * @param {object} sock - WhatsApp socket instance
-   * @param {string} from - Sender JID
-   * @param {Array} args - Command arguments
-   */
-  execute: async (sock, from, args) => {
-    await sock.sendMessage(from, {
-      text: helpText,
-    });
+  name: "!help",
+  aliases: ["help"],
+  run: async ({ sock, msg }) => {
+    const chatId = msg.key.remoteJid;
+    const text = [
+      "🤖 *Nexos Bot Commands*",
+      "",
+      "!hi / hi — تحية",
+      "!ping / ping — قياس الاستجابة",
+      "!time / time — وقت الخادم",
+      "!id / id — (موجود كـ fallback في الهاندلر العام)",
+      "!echo / echo <نص> — (fallback) يكرر النص",
+      "!help / help — هذه القائمة",
+      "!image / image <url> — إرسال صورة من رابط",
+      "!poll / poll سؤال | خيار1, خيار2 — إنشاء تصويت",
+    ].join("\n");
+    await sock.sendMessage(chatId, { text }, { quoted: msg });
   }
 };
