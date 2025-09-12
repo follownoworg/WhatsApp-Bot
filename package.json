@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-bot-baileys",
-  "version": "0.2.0",
-  "description": "WhatsApp bot using Baileys, Express, MongoDB session storage, and Telegram QR delivery.",
+  "version": "0.3.0",
+  "description": "WhatsApp bot using Baileys, Express, MongoDB auth state, and Telegram QR delivery.",
   "private": true,
   "main": "index.js",
   "engines": {
