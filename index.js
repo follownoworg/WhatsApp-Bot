@@ -59,18 +59,16 @@ for (const file of eventFiles) {
 
 async function startBot() {
   // Load session from MongoDB
-  let state;
+  let auth = { creds: {}, keys: {} }; // افتراضي عند أول تشغيل
   const dbSession = await Session.findOne({ id: "session" });
   if (dbSession) {
-    state = JSON.parse(decrypt(dbSession.data));
+    const state = JSON.parse(decrypt(dbSession.data));
+    auth = { creds: state.creds, keys: state.keys };
     logger.info("✅ Loaded session from MongoDB");
   }
 
   const { version, isLatest } = await fetchLatestBaileysVersion();
   logger.info(`Using Baileys v${version.join(".")}, Latest: ${isLatest}`);
-
-  // Prepare auth object for Baileys
-  const auth = state ? { creds: state.creds, keys: state.keys } : undefined;
 
   const sock = makeWASocket({
     version,
