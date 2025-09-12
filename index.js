@@ -12,7 +12,7 @@ const path = require("path");
 const pino = require("pino");
 const config = require("./utils");
 
-// Logging setup (كما كان)
+// Logging setup
 const logDir = path.join(__dirname, "logs");
 if (!fs.existsSync(logDir)) fs.mkdirSync(logDir);
 const logFile = path.join(logDir, `${new Date().toISOString().slice(0, 10)}.log`);
@@ -69,10 +69,12 @@ async function startBot() {
   const { version, isLatest } = await fetchLatestBaileysVersion();
   logger.info(`Using Baileys v${version.join(".")}, Latest: ${isLatest}`);
 
+  // Prepare auth object for Baileys
+  const auth = state ? { creds: state.creds, keys: state.keys } : undefined;
+
   const sock = makeWASocket({
     version,
-    auth: state || undefined,
-    printQRInTerminal: true, // يظهر QR للمرة الأولى إذا لم توجد جلسة
+    auth,
     logger: pino({ level: 'silent' }),
     browser: ["NexosBot", "Opera GX", "120.0.5543.204"],
     generateHighQualityLinkPreview: true,
@@ -81,9 +83,21 @@ async function startBot() {
     shouldSyncHistoryMessage: config.bot?.history || false,
   });
 
+  // Handle QR code
+  sock.ev.on("connection.update", (update) => {
+    if (update.qr) {
+      console.log("📌 QR code for login (scan once):");
+      console.log(update.qr);
+    }
+  });
+
   // Save login credentials to MongoDB on update
-  sock.ev.on("creds.update", async (authState) => {
-    const encrypted = encrypt(JSON.stringify(authState));
+  sock.ev.on("creds.update", async () => {
+    const stateToSave = {
+      creds: sock.authState.creds,
+      keys: sock.authState.keys,
+    };
+    const encrypted = encrypt(JSON.stringify(stateToSave));
     await Session.findOneAndUpdate(
       { id: "session" },
       { data: encrypted },
