@@ -1,21 +1,17 @@
-
-/**
- * Sends a predefined image with a caption to the chat.
- * Usage: !image
- */
 module.exports = {
-  name: "image",
-  description: "Send an image.",
-  /**
-   * Sends an image to the user.
-   * @param {object} sock - WhatsApp socket instance
-   * @param {string} from - Sender JID
-   * @param {Array} args - Command arguments
-   */
-  execute: async (sock, from, args) => {
-    await sock.sendMessage(from, {
-      image: { url: "https://www.nexoscreator.tech/logo.png" },
-      caption: "Here is an image!",
-    });
-  },
+  name: "!image",
+  aliases: ["image", "!img", "img"],
+  run: async ({ sock, msg, args }) => {
+    const chatId = msg.key.remoteJid;
+    const url = (args || []).join(" ").trim();
+    if (!url) {
+      return sock.sendMessage(chatId, { text: "استخدم: `!image <رابط_صورة>`" }, { quoted: msg });
+    }
+    // Baileys يدعم إرسال صورة عبر URL مباشرة في الإصدارات الحديثة
+    await sock.sendMessage(
+      chatId,
+      { image: { url }, caption: "🖼️ الصورة المطلوبة" },
+      { quoted: msg }
+    );
+  }
 };
