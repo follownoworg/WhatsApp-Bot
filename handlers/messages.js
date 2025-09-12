@@ -11,9 +11,8 @@ try {
 }
 
 /**
- * نريد إرسال تلميح افتراضي في "الخاص فقط" وكل 24 ساعة كحد أدنى لكل محادثة.
- * نستخدم Map في الذاكرة لتسجيل آخر وقت أُرسل فيه التلميح لكل chatId.
- * ملاحظة: يُعاد ضبطها عند إعادة تشغيل العملية.
+ * إرسال تلميح افتراضي في "الخاص فقط" وكل 24 ساعة كحد أدنى لكل محادثة.
+ * التخزين في الذاكرة (يُصفّر عند إعادة التشغيل).
  */
 const defaultHintLastSent = new Map(); // chatId -> timestamp(ms)
 const HINT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 ساعة
@@ -38,7 +37,10 @@ module.exports = function registerMessageHandlers(sock, logger) {
     commandsCache = loadCommands(logger); // حمّل أوامر commands/ مرة واحدة
   }
 
-  sock.ev.on("messages.upsert", async ({ messages }) => {
+  // لوج للتأكد أن الهاندلر تفعّل
+  logger.info("🧩 messages.upsert listener attached.");
+
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
     try {
       if (!messages || !messages.length) return;
       const msg = messages[0];
@@ -63,6 +65,18 @@ module.exports = function registerMessageHandlers(sock, logger) {
         "";
 
       const text = (body || "").trim();
+
+      // 🔎 لوج تشخيصي لكل رسالة واردة
+      logger.info({
+        ev: "messages.upsert",
+        type,
+        chatId,
+        isGroup,
+        senderId,
+        hasText: !!text,
+        messageKeys: Object.keys(msg.message || {})
+      }, "📩 Received message");
+
       if (!text) return;
 
       const reply = (t) => sock.sendMessage(chatId, { text: t }, { quoted: msg });
@@ -139,7 +153,7 @@ module.exports = function registerMessageHandlers(sock, logger) {
           );
           return;
         }
-        // لا default هنا — سننتقل للرسالة الافتراضية أدناه
+        // لا default — نكمل للرسالة الافتراضية
       }
 
       // 4) الرسالة الافتراضية — في الخاص فقط، وكل 24 ساعة كحد أدنى
@@ -150,9 +164,8 @@ module.exports = function registerMessageHandlers(sock, logger) {
           await reply(DEFAULT_HINT_TEXT);
           defaultHintLastSent.set(chatId, now);
         }
-        // إذا لم تنقضِ 24 ساعة منذ آخر إرسال، لا ترسل شيئًا لتجنب التشويش.
       }
-      // في المجموعات: لا نرسل أي رسالة افتراضية.
+      // في المجموعات: لا إرسال افتراضي
 
     } catch (err) {
       logger.error({ err, stack: err?.stack }, "messages.upsert handler error");
