@@ -3,6 +3,7 @@
  * - Full MongoDB auth state for Baileys (creds + signal keys)
  * - Express health server
  * - Telegram QR delivery (buffer + file fallback)
+ * - Auto-load commands/ via handlers/messages
  */
 
 const fs = require("fs");
@@ -20,6 +21,9 @@ const {
 } = require("@whiskeysockets/baileys");
 const QRCode = require("qrcode");
 const TelegramBot = require("node-telegram-bot-api");
+
+// ✅ استيراد هاندلر الرسائل (يشغّل أوامر مجلد commands/ + كلمات مفتاحية إن وُجدت)
+const registerMessageHandlers = require("./handlers/messages");
 
 // ---------- Config ----------
 const {
@@ -56,7 +60,7 @@ mongoose.connection.on("error", (err) => logger.error({ err }, "Mongo connection
 const credsSchema = new mongoose.Schema(
   {
     _id: { type: String, default: "creds" }, // ثابت
-    data: { type: String, required: true } // JSON.stringified with BufferJSON
+    data: { type: String, required: true }   // JSON.stringified with BufferJSON
   },
   { versionKey: false }
 );
@@ -161,7 +165,7 @@ async function startBot() {
 
     const sock = makeWASocket({
       version,
-      auth: state, // ✅ هذا هو المطلوب من Baileys
+      auth: state, // ✅ Auth كامل (creds + keys)
       printQRInTerminal: !tgBot,
       logger: pino({ level: "silent" }),
       browser: ["NexosBot", "Opera GX", "120.0.5543.204"],
@@ -175,7 +179,7 @@ async function startBot() {
     // حفظ الاعتمادات عند التحديث
     sock.ev.on("creds.update", saveCreds);
 
-    // ربط هاندلر الاتصال (وفيه إرسال QR لتليجرام)
+    // ربط هاندلر الاتصال (إرسال QR إلى تيليجرام بموثوقية)
     const connectionUpdateHandler = require("./events/connection.update")({
       logger,
       tgBot,
@@ -184,6 +188,10 @@ async function startBot() {
       QRCode,
     });
     sock.ev.on("connection.update", connectionUpdateHandler(sock));
+
+    // ✅ تفعيل هاندلر الرسائل (يشغّل أوامر commands/ تلقائيًا + كلمات مفتاحية لو موجودة)
+    registerMessageHandlers(sock, logger);
+
   } catch (err) {
     logger.error({ err, stack: err?.stack }, "startBot fatal error");
     setTimeout(startBot, 5000);
