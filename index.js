@@ -1,54 +1,46 @@
+
 /**
- * WhatsApp Bot Entry Point with MongoDB session storage
+ * WhatsApp Bot Entry Point
+ * Loads config, commands, events, and starts the bot.
  */
 const {
   default: makeWASocket,
+  useMultiFileAuthState,
   fetchLatestBaileysVersion,
 } = require("@whiskeysockets/baileys");
-const mongoose = require("mongoose");
-const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const pino = require("pino");
 const config = require("./utils");
 
-// Logging setup
+// Logging via pino
 const logDir = path.join(__dirname, "logs");
-if (!fs.existsSync(logDir)) fs.mkdirSync(logDir);
+if (!fs.existsSync(logDir)) { fs.mkdirSync(logDir); }
 const logFile = path.join(logDir, `${new Date().toISOString().slice(0, 10)}.log`);
-const logger = pino({ level: config.logging?.level || "info", transport: { target: "pino-pretty" } }, pino.destination(logFile));
 
-// Connect MongoDB
-mongoose.connect(process.env.MONGODB_URL, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
-const SessionSchema = new mongoose.Schema({ id: String, data: String });
-const Session = mongoose.model("Session", SessionSchema);
+const logger = pino(
+  {
+    level: config.logging?.level || "info",
+    transport: { target: "pino-pretty" }
+  },
+  pino.destination(logFile)
+);
 
-// Encrypt/Decrypt functions using SESSION_SECRET
-function encrypt(text) {
-  const cipher = crypto.createCipher("aes-256-ctr", process.env.SESSION_SECRET);
-  let crypted = cipher.update(text, "utf8", "hex");
-  crypted += cipher.final("hex");
-  return crypted;
-}
-function decrypt(text) {
-  const decipher = crypto.createDecipher("aes-256-ctr", process.env.SESSION_SECRET);
-  let dec = decipher.update(text, "hex", "utf8");
-  dec += decipher.final("utf8");
-  return dec;
-}
-
-// Load commands
+/**
+ * Loads all command modules from the commands directory.
+ * @returns {Map}
+ */
 const commands = new Map();
 fs.readdirSync("./commands").forEach((file) => {
   const cmd = require(`./commands/${file}`);
   commands.set(cmd.name, cmd);
 });
 
-// Load event handlers
-const eventFiles = fs.readdirSync("./events").filter(f => f.endsWith(".js"));
+/**
+ * Loads all event handler modules from the events directory.
+ * @returns {Array}
+ */
+const eventFiles = fs.readdirSync("./events").filter((f) => f.endsWith(".js"));
 const eventHandlers = [];
 for (const file of eventFiles) {
   const eventModule = require(`./events/${file}`);
@@ -57,22 +49,18 @@ for (const file of eventFiles) {
   }
 }
 
+/**
+ * Starts the WhatsApp bot and registers event handlers.
+ */
 async function startBot() {
-  // Load session from MongoDB
-  let auth = { creds: {}, keys: {} }; // افتراضي عند أول تشغيل
-  const dbSession = await Session.findOne({ id: "session" });
-  if (dbSession) {
-    const state = JSON.parse(decrypt(dbSession.data));
-    auth = { creds: state.creds, keys: state.keys };
-    logger.info("✅ Loaded session from MongoDB");
-  }
-
+  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
   const { version, isLatest } = await fetchLatestBaileysVersion();
   logger.info(`Using Baileys v${version.join(".")}, Latest: ${isLatest}`);
 
   const sock = makeWASocket({
     version,
-    auth,
+    auth: state,
+    printQRInTerminal: false,
     logger: pino({ level: 'silent' }),
     browser: ["NexosBot", "Opera GX", "120.0.5543.204"],
     generateHighQualityLinkPreview: true,
@@ -81,36 +69,18 @@ async function startBot() {
     shouldSyncHistoryMessage: config.bot?.history || false,
   });
 
-  // Handle QR code
-  sock.ev.on("connection.update", (update) => {
-    if (update.qr) {
-      console.log("📌 QR code for login (scan once):");
-      console.log(update.qr);
-    }
-  });
+  // Save login credentials on update
+  sock.ev.on("creds.update", saveCreds);
 
-  // Save login credentials to MongoDB on update
-  sock.ev.on("creds.update", async () => {
-    const stateToSave = {
-      creds: sock.authState.creds,
-      keys: sock.authState.keys,
-    };
-    const encrypted = encrypt(JSON.stringify(stateToSave));
-    await Session.findOneAndUpdate(
-      { id: "session" },
-      { data: encrypted },
-      { upsert: true }
-    );
-    logger.info("✅ Session saved/updated in MongoDB");
-  });
-
-  // Register event handlers
+  // Register all event handlers
   for (const { eventName, handler } of eventHandlers) {
+    // Pass only the dependencies that the handler expects
     if (eventName === "connection.update") {
-      sock.ev.on(eventName, handler(sock, logger, startBot));
+      sock.ev.on(eventName, handler(sock, logger, saveCreds, startBot));
     } else if (eventName === "messages.upsert") {
       sock.ev.on(eventName, handler(sock, logger, commands));
     } else {
+      // For future extensibility, just pass sock and logger
       sock.ev.on(eventName, handler(sock, logger));
     }
   }
