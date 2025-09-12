@@ -22,7 +22,7 @@ module.exports = ({ logger, tgBot, adminId, startBot, QRCode }) =>
     // ---- QR handling (send to Telegram if available) ----
     if (qr && tgBot && adminId) {
       try {
-        // حاول أولاً إرسال Buffer مباشرة
+        // Buffer first
         const buffer = await QRCode.toBuffer(qr, { type: "png" });
         await tgBot.sendPhoto(adminId, buffer, {
           caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
@@ -31,7 +31,7 @@ module.exports = ({ logger, tgBot, adminId, startBot, QRCode }) =>
       } catch (bufErr) {
         logger.error({ err: bufErr }, "❌ Failed to send QR buffer to Telegram. Falling back to file.");
 
-        // Fallback: اكتب ملف في مجلد مؤقت آمن ثم أرسله
+        // Fallback to file in /tmp
         try {
           const tmpPath = path.join(os.tmpdir(), "qr.png");
           await QRCode.toFile(tmpPath, qr, { type: "png" });
