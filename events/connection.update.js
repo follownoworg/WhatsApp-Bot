@@ -1,6 +1,6 @@
 // Event Handler: connection.update
 // Description: Handles WhatsApp connection updates, QR code display as PNG, 
-// sends it to Telegram, and manages reconnection logic.
+// sends it to Telegram, and manages reconnection logic with MongoDB session storage.
 
 const fs = require("fs");
 const path = require("path");
@@ -8,52 +8,47 @@ const QRCode = require("qrcode");
 const { Boom } = require("@hapi/boom");
 const { DisconnectReason, delay } = require("@whiskeysockets/baileys");
 const TelegramBot = require("node-telegram-bot-api");
+const mongoose = require("mongoose");
 
-// إعداد بوت تيليجرام من متغيرات البيئة
+// --------------------- MongoDB Setup ---------------------
+const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) throw new Error("❌ Missing MONGODB_URI in environment variables.");
+mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+
+const sessionSchema = new mongoose.Schema({ name: String, data: Object });
+const Session = mongoose.model("Session", sessionSchema);
+
+// --------------------- Telegram Setup ---------------------
 const tgToken = process.env.TELEGRAM_TOKEN;
 const adminId = process.env.TELEGRAM_ADMIN_ID;
-const tgBot = tgToken ? new TelegramBot(tgToken, { polling: false }) : null;
-
+const tgBot = tgToken && adminId ? new TelegramBot(tgToken, { polling: false }) : null;
 
 module.exports = {
   eventName: "connection.update",
-  /**
-   * Handles connection state changes, QR code display, Telegram sending, and reconnection.
-   * @param {object} sock - The WhatsApp socket instance.
-   * @param {object} logger - Logger for logging info and errors.
-   * @param {Function} saveCreds - Function to save credentials.
-   * @param {Function} startBot - Function to restart the bot if needed.
-   * @returns {Function}
-   */
   handler:
     (sock, logger, saveCreds, startBot) =>
     async ({ connection, lastDisconnect, qr }) => {
-      if (qr) {
+      // --------------------- Handle QR ---------------------
+      if (qr && tgBot && adminId) {
         const qrPath = path.join(__dirname, "qr.png");
         QRCode.toFile(qrPath, qr, { type: "png" }, async (err) => {
           if (err) {
             logger.error("❌ Failed to generate QR:", err);
           } else {
             logger.info(`✅ QR code generated at: ${qrPath}`);
-
-            if (tgBot && adminId) {
-              try {
-                await tgBot.sendPhoto(adminId, fs.createReadStream(qrPath), {
-                  caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
-                });
-                logger.info("📤 QR code sent to Telegram admin.");
-              } catch (tgErr) {
-                logger.error("❌ Failed to send QR to Telegram:", tgErr);
-              }
-            } else {
-              logger.warn(
-                "⚠️ Telegram bot not configured. Set TELEGRAM_TOKEN and TELEGRAM_ADMIN_ID in environment."
-              );
+            try {
+              await tgBot.sendPhoto(adminId, fs.createReadStream(qrPath), {
+                caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
+              });
+              logger.info("📤 QR code sent to Telegram admin.");
+            } catch (tgErr) {
+              logger.error("❌ Failed to send QR to Telegram:", tgErr);
             }
           }
         });
       }
 
+      // --------------------- Connection Close Handling ---------------------
       if (connection === "close") {
         const reasonCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
         const shouldReconnect = reasonCode !== DisconnectReason.loggedOut;
@@ -64,11 +59,29 @@ module.exports = {
           await delay(3000);
           startBot();
         } else {
-          logger.error("Logged out. Please delete auth_info and re-authenticate.");
+          logger.error("Logged out. Please reauthenticate.");
         }
-      } else if (connection === "open") {
-        logger.info("Connected to WhatsApp");
-        // Send a message to the bot's (self-DM)
+      }
+
+      // --------------------- Connection Open Handling ---------------------
+      else if (connection === "open") {
+        logger.info("✅ Connected to WhatsApp");
+
+        // --------------------- Save session to MongoDB ---------------------
+        sock.ev.on("creds.update", async (newCreds) => {
+          try {
+            await Session.updateOne(
+              { name: "auth_info" },
+              { $set: { data: newCreds } },
+              { upsert: true }
+            );
+            logger.info("✅ Updated session in MongoDB.");
+          } catch (err) {
+            logger.error("❌ Failed to save session to MongoDB:", err);
+          }
+        });
+
+        // --------------------- Send Self-DM ---------------------
         try {
           const selfId = sock.user?.id || sock.user?.jid || sock.user;
           if (selfId) {
