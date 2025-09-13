@@ -1,7 +1,7 @@
 /**
  * WhatsApp Bot Entry Point
  * - Full MongoDB auth state for Baileys (creds + signal keys)
- * - Express health server (+ log pings)
+ * - Express health server (+ log pings incl. HEAD for UptimeRobot)
  * - Telegram QR delivery + Telegram admin commands (/ignore, /allow, /ignores)
  * - Auto-load commands via handlers/messages
  */
@@ -103,7 +103,7 @@ let tgBot = null;
       // أنشئ البوت بدون polling أولاً
       tgBot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
 
-      // امنع التكرار عبر حارس عالمي (في حال إعادة تحميل ساخنة)
+      // امنع التكرار عبر حارس عالمي
       if (!global.__tgPollingStarted) {
         // احذف أي Webhook سابق + تجاهل رسائل الانتظار
         try {
@@ -121,9 +121,9 @@ let tgBot = null;
       }
 
       tgBot.on("polling_error", (err) => {
-        // تجاهل 409 لأنها تعني وجود مستهلك آخر (نطبع تحذير فقط)
+        // 409 = تزامن مؤقت عند إعادة التشغيل؛ سجّلها كمعلومة وتجاهل
         if (String(err?.message || "").includes("409")) {
-          return logger.warn("Telegram polling error 409: another getUpdates is running. Ensure single instance.");
+          return logger.info("ℹ️ Telegram 409 detected (old instance overlap). Ignoring.");
         }
         logger.warn({ err }, "Telegram polling error");
       });
@@ -226,14 +226,30 @@ if (tgBot) {
 
 // ---------- Express ----------
 const app = express();
+
+// لوج واضح لطلبات UptimeRobot على /healthz (HEAD/GET)
 app.use((req, _res, next) => {
   if (req.path === "/healthz") {
-    logger.info({ ua: req.headers["user-agent"] }, "🔁 /healthz ping");
+    logger.info(
+      { ua: req.headers["user-agent"], method: req.method },
+      "🔁 /healthz ping"
+    );
   }
   next();
 });
+
+// الجذر (اختياري) — لو أردت أيضًا مراقب للجذر
 app.get("/", (_req, res) => res.send("WhatsApp Bot running"));
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+
+// ✅ صحيّة تدعم GET و HEAD صراحة (UptimeRobot يستخدم HEAD غالبًا)
+app.all("/healthz", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (req.method === "HEAD") {
+    return res.status(200).end(); // 200 بدون جسم
+  }
+  res.type("text/plain").send("OK");
+});
+
 app.listen(PORT, () => logger.info(`HTTP server running on port ${PORT}`));
 
 // ---------- Start Bot ----------
