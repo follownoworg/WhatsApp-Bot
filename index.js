@@ -141,27 +141,31 @@ async function startBot() {
       auth: state,
       printQRInTerminal: !tgBot,
       logger: pino({ level: "silent" }),
-      browser: ["NexosBot", "Opera GX", "120.0.5543.204"],
-      generateHighQualityLinkPreview: true,
-      markOnlineOnConnect: true,
 
-      // جَرّب إطفاء مزامنة التاريخ الآن لتقليل الضغط
+      // مُعرّف متحفظ يشبه متصفح شائع
+      browser: ["Chrome", "Linux", "121.0.0.0"],
+
+      // قلّل الإشارات التي قد تُثير النشاط/الفلاتر
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+
+      // ابدأ بدون مزامنة تاريخ لتخفيف الضغط (استقرار أولاً)
       syncFullHistory: false,
       shouldSyncHistoryMessage: false,
 
-      // مهلات و keep-alive أهدأ
-      keepAliveIntervalMs: 60_000,
+      // مهلات و keep-alive أنسب للمنصات المجانية
+      keepAliveIntervalMs: 20_000,       // نبضة كل 20 ثانية
       connectTimeoutMs: 60_000,
       defaultQueryTimeoutMs: 60_000,
-      emitOwnEvents: false,
 
+      emitOwnEvents: false,
       getMessage: async () => undefined,
     });
 
     // حفظ الاعتمادات عند التحديث
     sock.ev.on("creds.update", saveCreds);
 
-    // هاندلر الاتصال (Backoff + QR للتليجرام)
+    // هاندلر الاتصال (Backoff + QR للتليجرام + flap debounce)
     const connectionUpdateHandlerFactory = require("./events/connection.update")({
       logger,
       tgBot,
