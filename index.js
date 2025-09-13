@@ -29,6 +29,7 @@ const IgnoreChat = require("./models/IgnoreChat");
 const {
   TELEGRAM_TOKEN,
   TELEGRAM_ADMIN_ID, // numeric chat id (string/number)
+  ADMIN_WA,         // رقم واتساب الأدمن بدون + (مثال: 967713121581) — يُستخدم في أوامر واتساب الإدارية (اختياري)
   PORT = 3000,
   LOG_LEVEL = "info",
 } = process.env;
@@ -99,14 +100,22 @@ async function useMongoAuthState(logger) {
 }
 
 // ---------- Telegram (optional) ----------
+// ✅ فعّلنا polling ليستقبل أوامر /ignore …
+// ملاحظة: لازم تكون بدأت محادثة مع البوت (ضغطت Start) من نفس حساب TELEGRAM_ADMIN_ID
 const tgBot = TELEGRAM_TOKEN && TELEGRAM_ADMIN_ID
-  ? new TelegramBot(TELEGRAM_TOKEN, { polling: false })
+  ? new TelegramBot(TELEGRAM_TOKEN, { polling: true })
   : null;
+
+if (tgBot) {
+  tgBot.on("polling_error", (err) => {
+    logger.warn({ err }, "Telegram polling error");
+  });
+}
 
 (async () => {
   if (tgBot) {
     try {
-      await tgBot.sendMessage(TELEGRAM_ADMIN_ID, "🚀 Nexos WhatsApp bot started. QR will arrive here.");
+      await tgBot.sendMessage(TELEGRAM_ADMIN_ID, "🚀 Nexos WhatsApp bot started. Admin commands ready.");
       logger.info("📨 Sent startup test message to Telegram admin.");
     } catch (err) {
       logger.error({ err }, "❌ Failed to send startup test message to Telegram");
