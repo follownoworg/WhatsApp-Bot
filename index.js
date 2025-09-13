@@ -19,9 +19,8 @@ const {
 const QRCode = require("qrcode");
 const TelegramBot = require("node-telegram-bot-api");
 
-// ✅ هاندلر الرسائل
+// ✅ الهاندلر
 const registerMessageHandlers = require("./handlers/messages");
-
 // ✅ موديل التجاهل
 const IgnoreChat = require("./models/IgnoreChat");
 
@@ -50,7 +49,7 @@ mongoose.connect(MONGODB_URI).catch((err) => {
 mongoose.connection.on("connected", () => logger.info("✅ Mongo connected"));
 mongoose.connection.on("error", (err) => logger.error({ err }, "Mongo connection error"));
 
-// ---------- Schemas / Models for Baileys auth ----------
+// ---------- Baileys auth (creds + signal keys في Mongo) ----------
 const credsSchema = new mongoose.Schema(
   { _id: { type: String, default: "creds" }, data: { type: String, required: true } },
   { versionKey: false }
@@ -64,7 +63,6 @@ keySchema.index({ type: 1, id: 1 }, { unique: true });
 const CredsModel = mongoose.model("BaileysCreds", credsSchema);
 const KeyModel = mongoose.model("BaileysKey", keySchema);
 
-// ---------- Mongo Auth State ----------
 async function useMongoAuthState(logger) {
   const credsDoc = await CredsModel.findById("creds").lean();
   const creds = credsDoc ? JSON.parse(credsDoc.data, BufferJSON.reviver) : initAuthCreds();
@@ -97,24 +95,47 @@ async function useMongoAuthState(logger) {
   return { state: { creds, keys }, saveCreds };
 }
 
-// ---------- Telegram (polling=true لاستقبال أوامر المشرف) ----------
-const tgBot = TELEGRAM_TOKEN && TELEGRAM_ADMIN_ID
-  ? new TelegramBot(TELEGRAM_TOKEN, { polling: true })
-  : null;
-
-if (tgBot) {
-  tgBot.on("polling_error", (err) => {
-    logger.warn({ err }, "Telegram polling error");
-  });
-}
-
+// ---------- Telegram (Polling واحد + تنظيف Webhook) ----------
+let tgBot = null;
 (async () => {
-  if (tgBot) {
+  if (TELEGRAM_TOKEN && TELEGRAM_ADMIN_ID) {
     try {
-      await tgBot.sendMessage(TELEGRAM_ADMIN_ID, "🚀 Nexos WhatsApp bot started. Admin commands ready.");
-      logger.info("📨 Sent startup test message to Telegram admin.");
+      // أنشئ البوت بدون polling أولاً
+      tgBot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
+
+      // امنع التكرار عبر حارس عالمي (في حال إعادة تحميل ساخنة)
+      if (!global.__tgPollingStarted) {
+        // احذف أي Webhook سابق + تجاهل رسائل الانتظار
+        try {
+          await tgBot.deleteWebHook({ drop_pending_updates: true });
+        } catch (e) {
+          logger.warn({ e }, "Telegram deleteWebHook warn");
+        }
+
+        // ابدأ polling الآن (نسخة واحدة فقط)
+        await tgBot.startPolling({ restart: true, interval: 300, timeout: 30 });
+        global.__tgPollingStarted = true;
+        logger.info("📬 Telegram polling started.");
+      } else {
+        logger.warn("ℹ️ Telegram polling already started (skipping).");
+      }
+
+      tgBot.on("polling_error", (err) => {
+        // تجاهل 409 لأنها تعني وجود مستهلك آخر (نطبع تحذير فقط)
+        if (String(err?.message || "").includes("409")) {
+          return logger.warn("Telegram polling error 409: another getUpdates is running. Ensure single instance.");
+        }
+        logger.warn({ err }, "Telegram polling error");
+      });
+
+      // رسالة بدء
+      try {
+        await tgBot.sendMessage(TELEGRAM_ADMIN_ID, "🚀 Nexos WhatsApp bot started. Admin commands ready.");
+      } catch (e) {
+        logger.warn({ e }, "Telegram startup DM warn");
+      }
     } catch (err) {
-      logger.error({ err }, "❌ Failed to send startup test message to Telegram");
+      logger.error({ err }, "Telegram init error");
     }
   } else {
     logger.warn("ℹ️ Telegram not configured (missing TELEGRAM_TOKEN/TELEGRAM_ADMIN_ID).");
@@ -134,7 +155,7 @@ function parseTarget(input) {
   return { jid: `${digits}@s.whatsapp.net`, digits, isGroup: false };
 }
 
-// ---------- Telegram Admin Commands (/ignore, /allow, /ignores) ----------
+// ---------- أوامر تيليجرام الإدارية ----------
 if (tgBot) {
   const onlyAdmin = (msg) => String(msg.chat?.id) === String(TELEGRAM_ADMIN_ID);
 
@@ -156,16 +177,15 @@ if (tgBot) {
     }
   });
 
-  // /allow و /unignore
   tgBot.onText(/^\/(?:allow|unignore)\s+(.+)$/i, async (msg, match) => {
     if (!onlyAdmin(msg)) return;
     const info = parseTarget(match[1]);
     if (!info?.jid) return tgBot.sendMessage(msg.chat.id, "❌ رقم/معرّف غير صالح.");
 
     try {
-      // احذف بالمطابقة التامة…
+      // حذف بالمطابقة التامة…
       const r1 = await IgnoreChat.deleteOne({ chatId: info.jid });
-      // …وأيضًا احذف أي إدخالات بنفس الأرقام (تحسبًا لاختلاف الصيغة)
+      // …وأيضًا حذف أي إدخالات بنفس الأرقام تحسبًا لاختلاف الصيغة
       const digitRegex = info.digits ? new RegExp(`^${info.digits}@`) : null;
       const r2 = digitRegex ? await IgnoreChat.deleteMany({ chatId: { $regex: digitRegex } }) : { deletedCount: 0 };
 
@@ -177,7 +197,7 @@ if (tgBot) {
       } else {
         await tgBot.sendMessage(
           msg.chat.id,
-          "ℹ️ هذه المحادثة ليست في قائمة التجاهل. استخدم /ignores لاستعراض القائمة.",
+          "ℹ️ هذه المحادثة ليست في قائمة التجاهل. استخدم /ignores لاستعراض القائمة."
         );
       }
     } catch (e) {
