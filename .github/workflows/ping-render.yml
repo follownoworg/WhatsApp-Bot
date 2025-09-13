@@ -1,0 +1,67 @@
+name: Keep Render Awake
+
+on:
+  schedule:
+    # يعمل كل 5 دقائق (يمكنك تعديلها لـ */10 كل 10 دقائق)
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}  # تشغيل يدوي عند الحاجة
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure PING_URL secret exists
+        run: |
+          if [ -z "${{ secrets.PING_URL }}" ]; then
+            echo "PING_URL secret is missing. Add it in GitHub -> Settings -> Secrets -> Actions."
+            exit 1
+          fi
+
+      - name: Primary ping (with retries)
+        run: |
+          URL="${{ secrets.PING_URL }}"
+          echo "Pinging $URL ..."
+          # نعرّف دالة مريحة للبينغ مع طباعة كود الاستجابة
+          ping() {
+            curl -sS -L \
+              --connect-timeout 10 \
+              --max-time 45 \
+              --retry 6 \
+              --retry-delay 5 \
+              --retry-connrefused \
+              -H "User-Agent: KeepAliveBot/1.0 (+github-actions)" \
+              -H "Cache-Control: no-cache" \
+              -o /dev/null \
+              -w "HTTP %{http_code}\n" \
+              "$1"
+          }
+
+          CODE=$(ping "$URL" | tail -n1 | awk '{print $2}')
+          echo "Primary response: HTTP ${CODE:-unknown}"
+
+          # اعتبر 2xx و 3xx نجاح
+          if [ -z "$CODE" ] || [ "$CODE" -lt 200 ] || [ "$CODE" -ge 400 ]; then
+            echo "Primary ping not clearly successful. Will try fallback..."
+            exit 2
+          fi
+
+      - name: Fallback ping (root path) if primary failed
+        if: failure()
+        run: |
+          ROOT_URL="${{ secrets.BACKUP_URL }}"
+          if [ -z "$ROOT_URL" ]; then
+            # إن لم توفّر BACKUP_URL سنشتق الجذر من PING_URL
+            ROOT_URL="$(echo "${{ secrets.PING_URL }}" | sed 's#/healthz$#/#')"
+          fi
+          echo "Pinging fallback: $ROOT_URL ..."
+          curl -sS -L \
+            --connect-timeout 10 \
+            --max-time 60 \
+            --retry 7 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -H "User-Agent: KeepAliveBot/1.0 (+github-actions)" \
+            -H "Cache-Control: no-cache" \
+            -o /dev/null \
+            -w "HTTP %{http_code}\n" \
+            "$ROOT_URL"
