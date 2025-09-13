@@ -1,85 +1,66 @@
 // events/connection.update.js
-// Handles WhatsApp connection updates, robust QR delivery to Telegram, and reconnection.
-
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
 const { Boom } = require("@hapi/boom");
 const { DisconnectReason, delay } = require("@whiskeysockets/baileys");
+const fs = require("fs");
+const path = require("path");
 
-/**
- * Factory to create connection.update handler with injected deps
- * @param {Object} deps
- * @param {import('pino').Logger} deps.logger
- * @param {import('node-telegram-bot-api')} [deps.tgBot]
- * @param {string|number} [deps.adminId]
- * @param {Function} deps.startBot
- * @param {Object} deps.QRCode (qrcode lib)
- */
-module.exports = ({ logger, tgBot, adminId, startBot, QRCode }) =>
-  (sock) =>
-  async ({ connection, lastDisconnect, qr }) => {
-    // ---- QR handling (send to Telegram if available) ----
-    if (qr && tgBot && adminId) {
-      try {
-        // Buffer first
-        const buffer = await QRCode.toBuffer(qr, { type: "png" });
-        await tgBot.sendPhoto(adminId, buffer, {
-          caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
-        });
-        logger.info("📤 QR code sent to Telegram (buffer).");
-      } catch (bufErr) {
-        logger.error({ err: bufErr }, "❌ Failed to send QR buffer to Telegram. Falling back to file.");
+module.exports = ({ logger, tgBot, adminId, startBot, QRCode }) => {
+  // تدرّج التأخير بين المحاولات (3s,5s,8s,13s,21s ثم 30s ثابت) + jitter
+  let attempt = 0;
+  function backoffMs() {
+    const table = [3000, 5000, 8000, 13000, 21000];
+    const base = table[Math.min(attempt, table.length - 1)] || 30000;
+    const jitter = Math.floor(Math.random() * 2000); // 0-2s
+    return base + jitter;
+  }
 
-        // Fallback to file in /tmp
+  return (sock) => async (update) => {
+    try {
+      const { connection, lastDisconnect, qr } = update;
+
+      // --- QR إلى تيليجرام (إن مفعّل) ---
+      if (qr && tgBot && adminId) {
         try {
-          const tmpPath = path.join(os.tmpdir(), "qr.png");
-          await QRCode.toFile(tmpPath, qr, { type: "png" });
-          await tgBot.sendPhoto(adminId, fs.createReadStream(tmpPath), {
+          const file = path.join(__dirname, "..", "qr.png");
+          await QRCode.toFile(file, qr, { type: "png" });
+          await tgBot.sendPhoto(adminId, fs.createReadStream(file), {
             caption: "📱 امسح هذا الكود لتسجيل الدخول في واتساب",
           });
-          logger.info(`📤 QR code generated & sent to Telegram from file: ${tmpPath}`);
-        } catch (fileErr) {
-          logger.error(
-            { err: fileErr },
-            "❌ QR generation/telegram send failed (both buffer and file). Ensure TELEGRAM_ADMIN_ID is numeric chat id and you've /start-ed the bot."
-          );
+          logger.info("📤 QR code sent to Telegram admin.");
+        } catch (e) {
+          logger.error({ e }, "❌ Failed to send QR to Telegram");
         }
       }
-    }
 
-    // ---- Connection closed -> maybe reconnect ----
-    if (connection === "close") {
-      const reasonCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      const shouldReconnect = reasonCode !== DisconnectReason.loggedOut;
-      logger.warn(`Connection closed. Code: ${reasonCode}. Reconnecting? ${shouldReconnect}`);
-      if (shouldReconnect) {
-        await delay(3000);
+      // --- فتح اتصال ---
+      if (connection === "open") {
+        attempt = 0;
+        logger.info("✅ Connected to WhatsApp");
+        return;
+      }
+
+      // --- إغلاق اتصال ---
+      if (connection === "close") {
+        const boom = new Boom(lastDisconnect?.error);
+        const code = boom.output?.statusCode;
+        const reasonStr = code || lastDisconnect?.error?.message || "unknown";
+        logger.warn(`Connection closed. Code: ${reasonStr}.`);
+
+        // لا تعاود لو تسجيل خروج فعلي
+        if (code === DisconnectReason.loggedOut) {
+          logger.error("⛔ Logged out. Delete session in MongoDB and re-authenticate.");
+          return;
+        }
+
+        // إعادة محاولة بانتظار تدريجي
+        const wait = backoffMs();
+        attempt += 1;
+        logger.warn(`🔄 Reconnecting in ~${Math.round(wait / 1000)}s (attempt ${attempt})`);
+        await delay(wait);
         startBot();
-      } else {
-        logger.error("Logged out. Please reauthenticate.");
       }
-      return;
-    }
-
-    // ---- Connection open -> send self DM ----
-    if (connection === "open") {
-      logger.info("✅ Connected to WhatsApp");
-      try {
-        const selfId = sock.user?.id || sock.user?.jid || sock.user;
-        if (selfId) {
-          await sock.sendMessage(selfId, {
-            text:
-              `*Thank you for Using Nexos Bot!*\n\n` +
-              `- *Official Discord Server:* https://discord.com/invite/A3euTAVqHv\n` +
-              `- *Server Time:* ${new Date().toLocaleString()}\n\n` +
-              `We ❤️ contributions!`,
-          });
-        } else {
-          logger.warn("Could not determine self WhatsApp ID to DM.");
-        }
-      } catch (err) {
-        logger.error({ err }, "Failed to send self-DM");
-      }
+    } catch (err) {
+      logger.error({ err }, "connection.update handler error");
     }
   };
+};
