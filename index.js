@@ -227,26 +227,24 @@ if (tgBot) {
 // ---------- Express ----------
 const app = express();
 
-// لوج واضح لطلبات UptimeRobot على /healthz (HEAD/GET)
+// سجّل كل طلبات /healthz و /healthz/ (HEAD أو GET)
 app.use((req, _res, next) => {
-  if (req.path === "/healthz") {
+  if (req.path === "/healthz" || req.path === "/healthz/") {
     logger.info(
-      { ua: req.headers["user-agent"], method: req.method },
-      "🔁 /healthz ping"
+      { ua: req.headers["user-agent"], method: req.method, path: req.path },
+      "🔁 healthz ping"
     );
   }
   next();
 });
 
-// الجذر (اختياري) — لو أردت أيضًا مراقب للجذر
-app.get("/", (_req, res) => res.send("WhatsApp Bot running"));
+// الجذر (اختياري – مفيد للاختبار اليدوي)
+app.get("/", (_req, res) => res.type("text/plain").send("WhatsApp Bot running"));
 
-// ✅ صحيّة تدعم GET و HEAD صراحة (UptimeRobot يستخدم HEAD غالبًا)
-app.all("/healthz", (req, res) => {
+// ✅ صحّة تدعم GET/HEAD للطريقين /healthz و /healthz/
+app.all(["/healthz", "/healthz/"], (req, res) => {
   res.set("Cache-Control", "no-store");
-  if (req.method === "HEAD") {
-    return res.status(200).end(); // 200 بدون جسم
-  }
+  if (req.method === "HEAD") return res.sendStatus(200); // 200 بدون جسم
   res.type("text/plain").send("OK");
 });
 
