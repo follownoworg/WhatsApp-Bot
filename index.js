@@ -171,8 +171,11 @@ async function startBot() {
       browser: ["NexosBot", "Opera GX", "120.0.5543.204"],
       generateHighQualityLinkPreview: true,
       markOnlineOnConnect: true,
-      syncFullHistory: false,
-      shouldSyncHistoryMessage: false,
+
+      // ✅ لتلقي الرسائل الفائتة بعد الاستيقاظ على الخطة المجانية
+      syncFullHistory: true,
+      shouldSyncHistoryMessage: true,
+
       getMessage: async () => undefined,
     });
 
