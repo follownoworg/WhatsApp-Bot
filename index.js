@@ -2,7 +2,7 @@
  * WhatsApp Bot Entry Point
  * - Full MongoDB auth state for Baileys (creds + signal keys)
  * - Express health server (+ log pings)
- * - Telegram QR delivery
+ * - Telegram QR delivery + Telegram admin commands (/ignore, /allow, /ignores)
  * - Auto-load commands via handlers/messages
  */
 
@@ -22,10 +22,13 @@ const TelegramBot = require("node-telegram-bot-api");
 // ✅ هاندلر الرسائل (يشغّل أوامر commands/ + كلمات مفتاحية إن وُجدت)
 const registerMessageHandlers = require("./handlers/messages");
 
+// ✅ موديل قائمة التجاهل
+const IgnoreChat = require("./models/IgnoreChat");
+
 // ---------- Config ----------
 const {
   TELEGRAM_TOKEN,
-  TELEGRAM_ADMIN_ID, // numeric chat id
+  TELEGRAM_ADMIN_ID, // numeric chat id (string/number)
   PORT = 3000,
   LOG_LEVEL = "info",
 } = process.env;
@@ -113,6 +116,75 @@ const tgBot = TELEGRAM_TOKEN && TELEGRAM_ADMIN_ID
   }
 })();
 
+// ---------- Telegram Admin Commands (/ignore, /allow, /ignores) ----------
+function toJid(input) {
+  if (!input) return null;
+  const s = String(input).trim();
+  if (s.includes("@")) return s;
+  const digits = s.replace(/\D+/g, "");
+  if (!digits) return null;
+  return `${digits}@s.whatsapp.net`;
+}
+
+if (tgBot) {
+  const onlyAdmin = (msg) => String(msg.chat?.id) === String(TELEGRAM_ADMIN_ID);
+
+  tgBot.onText(/^\/ignore\s+(.+)$/i, async (msg, match) => {
+    if (!onlyAdmin(msg)) return;
+    const raw = match[1].trim();
+    const jid = toJid(raw);
+    if (!jid) return tgBot.sendMessage(msg.chat.id, "❌ رقم/معرّف غير صالح.");
+
+    try {
+      await IgnoreChat.updateOne(
+        { chatId: jid },
+        { $set: { chatId: jid, addedBy: "telegram-admin" } },
+        { upsert: true }
+      );
+      await tgBot.sendMessage(msg.chat.id, `✅ تم تجاهل المحادثة: \`${jid}\``, { parse_mode: "Markdown" });
+    } catch (e) {
+      logger.error({ e }, "ignore via telegram failed");
+      await tgBot.sendMessage(msg.chat.id, "❌ فشل تنفيذ التجاهل.");
+    }
+  });
+
+  tgBot.onText(/^\/allow\s+(.+)$/i, async (msg, match) => {
+    if (!onlyAdmin(msg)) return;
+    const raw = match[1].trim();
+    const jid = toJid(raw);
+    if (!jid) return tgBot.sendMessage(msg.chat.id, "❌ رقم/معرّف غير صالح.");
+
+    try {
+      const res = await IgnoreChat.deleteOne({ chatId: jid });
+      if (res.deletedCount > 0) {
+        await tgBot.sendMessage(msg.chat.id, `✅ أُلغي التجاهل عن: \`${jid}\``, { parse_mode: "Markdown" });
+      } else {
+        await tgBot.sendMessage(msg.chat.id, "ℹ️ هذه المحادثة ليست في قائمة التجاهل.");
+      }
+    } catch (e) {
+      logger.error({ e }, "allow via telegram failed");
+      await tgBot.sendMessage(msg.chat.id, "❌ فشل إلغاء التجاهل.");
+    }
+  });
+
+  tgBot.onText(/^\/ignores$/i, async (msg) => {
+    if (!onlyAdmin(msg)) return;
+    try {
+      const rows = await IgnoreChat.find({}).sort({ createdAt: -1 }).limit(100).lean();
+      if (!rows.length) {
+        return tgBot.sendMessage(msg.chat.id, "📭 لا توجد محادثات متجاهلة.");
+      }
+      const body = rows
+        .map((r, i) => `${i + 1}. \`${r.chatId}\` — ${new Date(r.createdAt).toLocaleString("ar-YE")}`)
+        .join("\n");
+      await tgBot.sendMessage(msg.chat.id, `📝 *قائمة التجاهل*\n\n${body}`, { parse_mode: "Markdown" });
+    } catch (e) {
+      logger.error({ e }, "list ignores via telegram failed");
+      await tgBot.sendMessage(msg.chat.id, "❌ فشل جلب القائمة.");
+    }
+  });
+}
+
 // ---------- Express ----------
 const app = express();
 // لوج يثبت وصول البينغ من GitHub Actions/UptimeRobot
@@ -154,7 +226,7 @@ async function startBot() {
       shouldSyncHistoryMessage: false,
 
       // مهلات و keep-alive أنسب للمنصات المجانية
-      keepAliveIntervalMs: 20_000,       // نبضة كل 20 ثانية
+      keepAliveIntervalMs: 20_000, // نبضة كل 20 ثانية
       connectTimeoutMs: 60_000,
       defaultQueryTimeoutMs: 60_000,
 
@@ -175,7 +247,7 @@ async function startBot() {
     });
     sock.ev.on("connection.update", connectionUpdateHandlerFactory(sock));
 
-    // هاندلر الرسائل (أوامر + كلمات مفتاحية + رسالة افتراضية بالخاص)
+    // هاندلر الرسائل (أوامر + كلمات مفتاحية + رسالة افتراضية بالخاص + تجاهل محادثات)
     registerMessageHandlers(sock, logger);
 
   } catch (err) {
