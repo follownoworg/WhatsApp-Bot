@@ -26,16 +26,6 @@ const DEFAULT_HINT_TEXT = [
   "ولو عندك استفسار للدعم، اكتب رسالتك الآن وأنا أوصلها. 🙏",
 ].join("\n");
 
-// ===== Helpers =====
-function toJid(input) {
-  if (!input) return null;
-  const s = String(input).trim();
-  if (s.includes("@")) return s;
-  const digits = s.replace(/\D+/g, "");
-  if (!digits) return null;
-  return `${digits}@s.whatsapp.net`;
-}
-
 module.exports = function registerMessageHandlers(sock, logger) {
   if (!commandsCache) {
     commandsCache = loadCommands(logger); // تحميل أوامر مجلد commands/ مرة واحدة
@@ -53,8 +43,6 @@ module.exports = function registerMessageHandlers(sock, logger) {
     ["اختبار", "الوقت", "المعرف", "مساعدة", "id"].forEach((w) => commandWords.add(w));
   }
 
-  const ADMIN_WA = (process.env.ADMIN_WA || "").replace(/\D+/g, ""); // مثال: 967713121581
-
   sock.ev.on("messages.upsert", async ({ messages }) => {
     try {
       if (!messages || !messages.length) return;
@@ -68,7 +56,13 @@ module.exports = function registerMessageHandlers(sock, logger) {
       const isGroup = chatId?.endsWith("@g.us");
       const senderId = (msg.key?.participant || msg.key?.remoteJid || "").split(":")[0];
 
-      // استخراج نص الرسالة من أكثر من نوع
+      // ===== (1) فحص قائمة التجاهل لهذه الدردشة =====
+      const ignored = await IgnoreChat.exists({ chatId });
+      if (ignored) {
+        return; // صمت تام لهذه الدردشة فقط
+      }
+
+      // استخراج نص الرسالة
       const body =
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
@@ -83,49 +77,6 @@ module.exports = function registerMessageHandlers(sock, logger) {
       if (!text) return;
 
       const reply = (t) => sock.sendMessage(chatId, { text: t }, { quoted: msg });
-
-      // ===== (0) أوامر واتساب إدارية (للأدمن فقط) — تُعالج دائمًا حتى لو الدردشة مُتجاهلة =====
-      const lowerText = text.toLowerCase();
-      const adminIsSender =
-        ADMIN_WA &&
-        (senderId.includes(ADMIN_WA) || chatId.includes(`${ADMIN_WA}@s.whatsapp.net`));
-
-      if (adminIsSender) {
-        // تجاهل <رقم>
-        let m = lowerText.match(/^تجاهل\s+(.+)$/);
-        if (m) {
-          const jid = toJid(m[1]);
-          if (!jid) return reply("❌ رقم/معرّف غير صالح.");
-          await IgnoreChat.updateOne({ chatId: jid }, { $set: { chatId: jid, addedBy: "wa-admin" } }, { upsert: true });
-          return reply(`✅ تم تجاهل المحادثة: ${jid}`);
-        }
-
-        // سماح <رقم>
-        m = lowerText.match(/^سماح\s+(.+)$/);
-        if (m) {
-          const jid = toJid(m[1]);
-          if (!jid) return reply("❌ رقم/معرّف غير صالح.");
-          const res = await IgnoreChat.deleteOne({ chatId: jid });
-          if (res.deletedCount > 0) return reply(`✅ أُلغي التجاهل عن: ${jid}`);
-          return reply("ℹ️ هذه المحادثة ليست في قائمة التجاهل.");
-        }
-
-        // قائمة_التجاهل
-        if (lowerText === "قائمة_التجاهل") {
-          const rows = await IgnoreChat.find({}).sort({ createdAt: -1 }).limit(100).lean();
-          if (!rows.length) return reply("📭 لا توجد محادثات متجاهلة.");
-          const body = rows
-            .map((r, i) => `${i + 1}. ${r.chatId} — ${new Date(r.createdAt).toLocaleString("ar-YE")}`)
-            .join("\n");
-          return reply(`📝 قائمة التجاهل:\n\n${body}`);
-        }
-      }
-
-      // ===== (1) فحص قائمة التجاهل لهذه الدردشة =====
-      const ignored = await IgnoreChat.exists({ chatId });
-      if (ignored) {
-        return; // صمت تام لهذه الدردشة فقط
-      }
 
       // ===== (2) أوامر من مجلد commands/ (بدون "!") =====
       const [firstWordRaw, ...args] = text.split(/\s+/);
@@ -147,16 +98,12 @@ module.exports = function registerMessageHandlers(sock, logger) {
           return;
         }
         case "الوقت": {
-          await reply(
-            `🕒 الوقت الحالي: ${new Date().toLocaleString("ar-YE", { timeZone: "Asia/Aden" })}`
-          );
+          await reply(`🕒 الوقت الحالي: ${new Date().toLocaleString("ar-YE", { timeZone: "Asia/Aden" })}`);
           return;
         }
         case "المعرف":
         case "id": {
-          await reply(
-            `🆔 المحادثة: ${chatId}\n👤 المرسل: ${senderId}\n👥 مجموعة: ${isGroup ? "نعم" : "لا"}`
-          );
+          await reply(`🆔 المحادثة: ${chatId}\n👤 المرسل: ${senderId}\n👥 مجموعة: ${isGroup ? "نعم" : "لا"}`);
           return;
         }
         case "مساعدة": {
@@ -176,8 +123,9 @@ module.exports = function registerMessageHandlers(sock, logger) {
       }
 
       // ===== (4) ردود كلمات مفتاحية (بدون تعارض مع الأوامر) =====
-      if (!commandWords.has(lowerText) && keywordReplies[lowerText]) {
-        await reply(keywordReplies[lowerText]);
+      const lower = text.toLowerCase();
+      if (!commandWords.has(lower) && keywordReplies[lower]) {
+        await reply(keywordReplies[lower]);
         return;
       }
 
