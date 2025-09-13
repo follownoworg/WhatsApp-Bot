@@ -149,6 +149,15 @@ const tgBot = TELEGRAM_TOKEN && TELEGRAM_ADMIN_ID
 
 // ---------- Express ----------
 const app = express();
+
+// ✅ وسيط لتسجيل زيارات /healthz حتى تتأكد أن المُوقِظ وصل
+app.use((req, _res, next) => {
+  if (req.path === "/healthz") {
+    logger.info({ ua: req.headers["user-agent"] }, "🔁 /healthz ping");
+  }
+  next();
+});
+
 app.get("/", (_req, res) => res.send("WhatsApp Bot running"));
 app.get("/healthz", (_req, res) => res.json({ ok: true })); // فحص سريع للنشر
 app.listen(PORT, () => logger.info(`HTTP server running on port ${PORT}`));
