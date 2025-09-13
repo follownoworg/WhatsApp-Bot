@@ -1,5 +1,20 @@
-node_modules
+# dependencies
 node_modules/
 
-auth_info
+# env files
+.env
+.env.*    # مثل .env.local
+
+# logs & runtime artifacts
+logs/
+*.log
+qr.png
+qr-*.png
+
+# local auth folder (لو وُجد قديمًا)
 auth_info/
+auth/
+
+# OS junk
+.DS_Store
+Thumbs.db
