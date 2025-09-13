@@ -2,9 +2,8 @@ name: Keep Render Awake
 
 on:
   schedule:
-    # يعمل كل 5 دقائق (يمكنك تعديلها لـ */10 كل 10 دقائق)
-    - cron: "*/5 * * * *"
-  workflow_dispatch: {}  # تشغيل يدوي عند الحاجة
+    - cron: "*/10 * * * *"    # كل 10 دقائق (UTC)
+  workflow_dispatch: {}        # تشغيل يدوي عند الحاجة
 
 jobs:
   ping:
@@ -17,11 +16,13 @@ jobs:
             exit 1
           fi
 
+      - name: Random small delay (avoid hitting with UptimeRobot at same second)
+        run: sleep $((RANDOM % 40))
+
       - name: Primary ping (with retries)
         run: |
           URL="${{ secrets.PING_URL }}"
           echo "Pinging $URL ..."
-          # نعرّف دالة مريحة للبينغ مع طباعة كود الاستجابة
           ping() {
             curl -sS -L \
               --connect-timeout 10 \
@@ -35,11 +36,8 @@ jobs:
               -w "HTTP %{http_code}\n" \
               "$1"
           }
-
           CODE=$(ping "$URL" | tail -n1 | awk '{print $2}')
           echo "Primary response: HTTP ${CODE:-unknown}"
-
-          # اعتبر 2xx و 3xx نجاح
           if [ -z "$CODE" ] || [ "$CODE" -lt 200 ] || [ "$CODE" -ge 400 ]; then
             echo "Primary ping not clearly successful. Will try fallback..."
             exit 2
@@ -50,7 +48,6 @@ jobs:
         run: |
           ROOT_URL="${{ secrets.BACKUP_URL }}"
           if [ -z "$ROOT_URL" ]; then
-            # إن لم توفّر BACKUP_URL سنشتق الجذر من PING_URL
             ROOT_URL="$(echo "${{ secrets.PING_URL }}" | sed 's#/healthz$#/#')"
           fi
           echo "Pinging fallback: $ROOT_URL ..."
