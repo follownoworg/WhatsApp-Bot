@@ -294,6 +294,10 @@ async function startBot() {
     sock.ev.on("connection.update", connectionUpdateHandlerFactory(sock));
 
     registerMessageHandlers(sock, logger);
+
+    const gpHandlerFactory = require("./events/group-participants.update")({ logger });
+sock.ev.on("group-participants.update", gpHandlerFactory(sock));
+    
   } catch (err) {
     logger.error({ err, stack: err?.stack }, "startBot fatal error");
     setTimeout(startBot, 5000);
