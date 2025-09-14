@@ -122,7 +122,7 @@ module.exports = ({ logger }) => (sock) => async (update) => {
 
     if (action === "add" && cfg.welcomeOn) {
       const rulesText = buildRulesText({ cfg, groupDesc });
-      const linkLine = cfg.link ? `\n🔗 رابط القروب: ${cfg.link}` : "";
+      const linkLine = cfg.link ? `\n🔗 رابط قناتنا على واتساب: ${cfg.link}` : "";
 
       const welcomeText = [
         `مرحبًا ${namesText}! 👋`,                        // أسماء إن توفرت
